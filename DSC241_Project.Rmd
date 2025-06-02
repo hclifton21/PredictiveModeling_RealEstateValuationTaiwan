@@ -1,0 +1,754 @@
+---
+title: "Real Estate Valuation in Taiwan"
+subtitle: "DSC 241: Statistical Models - Project"
+author: "Harley Clifton & Tristan Cooper"
+date: "2025-05-05"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+
+# loading libraries
+library(tidyverse)
+library(readxl)
+library(lubridate)
+library(naniar)
+library(purrr)
+library(gridExtra)
+library(psych)
+library(broom)
+library(gt)
+library(MuMIn)
+library(Metrics)
+```
+
+
+
+## Introduction
+
+#### Problem Statement
+
+Predicting housing prices is a valuable and practical application of data analysis. In this project, we use a historical real estate dataset collected from Sindian District in New Taipei City, Taiwan. The dataset includes variables such as transaction dates, the age of the house, distance to the nearest MRT station, the number of nearby convenience stores, as well as latitude and longitude coordinates. Our goal is to explore whether a combination of these features can be used to build a model that accurately predicts housing prices.
+
+
+#### Research Question
+
+
+_Can a combination of property features accurately predict the unit price of real estate properties?_
+
+
+#### Variables of Interest
+
+**Response Variable:** House price per unit area (Y)
+
+
+**Predictor Variables:** Transaction date (X1), House age (X2), Distance to the nearest MRT station (X3), Number of convenience stores (X4), Latitude (X5), and Longitude (X6)
+
+
+#### Prediction Goal
+
+Develop a predictive model to estimate property prices based on available features and evaluate its accuracy
+
+
+$~$
+
+## Data Overview
+
+#### Variable Descriptions
+
+The dataset was sourced from the [UC Irvine Machine Learning Repository](https://archive.ics.uci.edu/dataset/477/real+estate+valuation+data+set), which hosts a wide range of curated datasets for research and educational purposes. A detailed summary of the dataset variables, including their units and data types, is provided in the table below. 
+
+```{r data description}
+# Write Dataframe with info
+
+proj <- data.frame(
+  Varibles = c("Transaction Date", 
+               "House Age", 
+               "Distance to nearest MRT Station", 
+               "Number of Convience Stores", 
+               "Latitiude", 
+               "Longitude", 
+               "House Price (per unit area)"),
+  Descriptions = c("Date in the formate yyyy.### where ### indicate the number of the month divided by 12; for example, 2013.250=2013 March, 2013.500=2013 June, etc.", 
+                  "Age of the house in years, rounded to nearest tenth.", 
+                  "Distance in meters", 
+                  "Number of convience stores within 500 meters of the house", 
+                  "geographic coordinate, latitude", 
+                  "geographic coordinate, longitude", 
+                  "10000 New Taiwan Dollar/Ping, where Ping is a local unit, 1 Ping = 3.3 meter squared"),
+  Type = c("real number", 
+           "real number", 
+           "real number", 
+           "nonnegative integer", 
+           "real number", 
+           "real number",
+           "real number"),
+  Units = c("", 
+           "year", 
+           "meter", 
+           "", 
+           "degree", 
+           "degree", 
+           "10000 New Taiwan Dollar/Ping"),
+  stringsAsFactors = FALSE
+)
+
+# Display info in Table
+
+proj %>%
+  gt() %>%
+  tab_header(title = "Project Variable Metadata")
+```
+
+
+#### Data Wrangling
+
+```{r, message = FALSE}
+# reading in the data
+projdat <- read_excel("Real estate valuation data set.xlsx")
+projdat <- projdat[, -1]
+
+#colnames(projdat)
+
+## Data Wrangling
+
+# renaming variables to make them easier to work with
+pdat <- projdat %>% rename("transaction_date" = "X1 transaction date",
+                           "house_age" = "X2 house age",
+                           "dist_MRT" = "X3 distance to the nearest MRT station",
+                           "num_stores" = "X4 number of convenience stores",
+                           "latitude" = "X5 latitude",
+                           "longitude" = "X6 longitude",
+                           "house_price" = "Y house price of unit area")
+
+#colnames(pdat)
+#pdat$num_stores <- as.factor(pdat$num_stores)
+```
+
+
+We first observed that the transaction date variable is formatted in an unusual way. It appears as `YEAR.###`, where the decimal portion is not immediately intuitive. Upon reviewing the codebook, we found that the digits following the decimal represent the month as a fraction of the year (i.e., the month number divided by 12). For example, January is represented as 1/12 = 0.0833, so January 2021 appears as `2021.083`. Similarly, December would be 12/12 = 1.0, making December 2021 appear as `2022.000`.
+
+To address this, we converted these values into standard date objects in the format `YYYY-MM-DD`, defaulting to the first day of the month (`DD` = 01) since day-level information is not available. 
+
+```{r, message = FALSE}
+###  Create new variable for tidy dates
+
+tidy_dates <- function(transaction_date) {
+  year <- floor(transaction_date)
+  month_decimal <- transaction_date - year
+  month <- round(month_decimal * 12)
+  
+  # Adjust year and month if month is 0 (should be December of previous year)
+  year <- ifelse(month == 0, year - 1, year)
+  month <- ifelse(month == 0, 12, month)
+  
+  trans_date <- make_date(year, month, 1)
+  trans_ym <- format(trans_date, "%Y-%m")
+  
+  list(trans_date = trans_date, trans_ym = trans_ym)
+}
+
+pdat <- pdat %>% 
+  mutate(temp = map(transaction_date, tidy_dates)) %>%
+  unnest_wider(temp) 
+```
+
+
+$~$
+
+## Exploratory Data Analysis
+
+Exploratory data analysis (EDA) was carried out to examine the underlying structure of the dataset, supported by informative tables and figures.
+
+
+#### Missing Data
+
+We began our exploratory data analysis by visualizing missing values to assess data completeness and identify any potential issues in the dataset. Interestingly, we found that there are no missing values-an unexpected but welcome result (see Appendix for the missingness visualization). Since there is no missingness to address, we proceed by creating univariate visualizations to explore the distribution of individual variables.
+
+
+#### Univariate Graphs
+
+We begin by visualizing the predictor variables using appropriate plots to better understand their distributions. The first variable of interest is **transaction date**, for which we created a bar plot to display the frequency of transactions over time.
+
+```{r, out.width = "65%", fig.align='center'}
+# Transaction Date
+
+ggplot(pdat, aes(x = trans_ym)) +
+  geom_bar(fill = "maroon1") +
+  labs(title = "Number of Transactions by Year and Month",
+       x = "Transaction Date (Year-Month)",
+       y = "Count") +
+  scale_y_continuous(limits = c(0, 60), breaks = seq(0, 60, by = 10)) +
+  theme_minimal() +
+  theme(plot.title = element_text(hjust = 0.5, size = 14, face = "bold"),
+        axis.text.x = element_text(angle = 45),
+        axis.title.x = element_text(size = 11),
+        axis.title.y = element_text(size = 11))
+```
+
+Transaction dates range from August 2012 to July 2013, with at least 20 observations for each month. There are no suspected outliers. The monthly number of housing transactions fluctuates, indicating some seasonality or irregular patterns. May 2013 had the highest number of transactions, with January 2013 and June 2013 also fairly close. Fewer transactions occurred in February 2013 and July 2013, possibly due to seasonal factors or holidays.
+
+
+
+The next predictor of interest is **house age**, measured in years. To explore its distribution, we visualize this variable using a combined histogram and density plot, which allows us to examine both the frequency of observations and the overall shape of the distribution.
+
+```{r, warning = FALSE, out.width = "65%", fig.align='center'}
+# House Age
+
+## Find the scaling factor to match the density scale to count scale
+max_count <- max(ggplot_build(ggplot(pdat, aes(x = house_age)) + 
+                                geom_histogram(binwidth = 1))$data[[1]]$count)
+max_density <- max(density(pdat$house_age)$y)
+scale_factor <- max_count / max_density
+
+
+## Plot
+ggplot(pdat, aes(x = house_age)) +
+  geom_histogram(aes(y = ..count..), binwidth = 2, 
+                 fill = "orange1", color = "white", alpha = 0.6) +
+  geom_density(aes(y = ..density.. * scale_factor),
+               color = "magenta3", linewidth = 1) +
+  labs(title = "Histogram and Density Plot of House Age",
+       x = "House Age (Years)") +
+  scale_y_continuous(name = "Count",
+                     sec.axis = sec_axis(~ . / scale_factor, name = "Density")) +
+  scale_x_continuous(limits = c(0, 45), breaks = seq(0, 45, by = 5)) +
+  theme_minimal() +
+  theme(plot.title = element_text(hjust = 0.5, size = 14, face = "bold"),
+        axis.title.x = element_text(size = 11),
+        axis.title.y = element_text(size = 11))
+
+```
+
+The distribution of House Age appears to be very irregular, but there is little suspicion of outliers. The density curve suggests a multimodal distribution, possibly indicating multiple waves of housing developments. The largest concentration of homes appears to be around 15 to 20 years old. There are relatively fewer houses under 5 years old or older than 40 years, suggesting limited recent construction and fewer retained very old properties. Given its spread and variability, house age may have a non-linear relationship with housing price, and might benefit from transformation or binning in predictive modeling.
+
+
+
+Next, we examine the variable **distance to the nearest MRT station**. To explore its distribution, we use a combined histogram and density plot, which allows us to visualize both the counts and distribution.
+
+```{r, warning = FALSE, out.width = "70%", fig.align='center'}
+# Distance to the Nearest MRT Station
+
+## Find the scaling factor to match the density scale to count scale
+max_count <- max(ggplot_build(ggplot(pdat, aes(x = dist_MRT)) + 
+                                geom_histogram(binwidth = 50))$data[[1]]$count)
+max_density <- max(density(pdat$dist_MRT)$y)
+scale_factor <- max_count / max_density
+
+
+## Plot
+ggplot(pdat, aes(x = dist_MRT)) +
+  geom_histogram(aes(y = ..count..), binwidth = 200, 
+                 fill = "mediumturquoise", color = "white", alpha = 0.6) +
+  geom_density(aes(y = ..density.. * scale_factor),
+               color = "orange1", linewidth = 1) +
+  labs(title = "Histogram and Density Plot of Distance to MRT Station",
+       x = "Distance to Nearest MRT Station (Meters)") +
+  scale_y_continuous(name = "Count",
+                     sec.axis = sec_axis(~ . / scale_factor, name = "Density")) +
+  scale_x_continuous(limits = c(0, 7000), breaks = seq(0, 7000, by = 1000)) +
+  theme_minimal() +
+  theme(plot.title = element_text(hjust = 0.5, size = 14, face = "bold"),
+        axis.title.x = element_text(size = 11),
+        axis.title.y = element_text(size = 11))
+
+```
+
+The distribution is heavily right-skewed, indicating that most houses are located close to MRT stations, with a long tail extending toward greater distances. A large concentration of properties (over half) are located within 500-1000 meters of an MRT station, suggesting strong demand or planning around transit accessibility. It is less common for homes to be located much farther away (up to 7000 meters). Due to its skewness, this variable may benefit from log transformation or binning when used in predictive models to reduce the impact of extreme values.
+
+
+Next, we visualize the **number of convenience stores** within 500 meters of each house. Since this is a discrete count variable, we use a bar plot to display the frequency distribution across different store counts.
+
+```{r, out.width = "50%", fig.align='center'}
+# Number of Convenience Stores
+
+ggplot(pdat, aes(x = as.factor(num_stores))) +
+  geom_bar(fill = "lightgreen") +
+  labs(title = "Number of Convenience Stores Nearby",
+       x = "Number of Stores",
+       y = "Count") +
+  theme_minimal() +
+  theme(plot.title = element_text(hjust = 0.5, size = 14, face = "bold"),
+        axis.title.x = element_text(size = 11),
+        axis.title.y = element_text(size = 11))
+
+```
+
+The distribution appears bimodal, with notable peaks at 0 and 5 convenience stores. This suggests two common housing contexts: (1) homes in less commercialized areas, and (2) homes in highly accessible urban zones. The number of nearby stores ranges from 0 to 10. The most frequent values are 0 and 5 stores, each with over 60 observations. Fewer homes are located near 2 or 10 stores, which may be edge cases in suburban or dense commercial zones, respectively.
+
+The next variable we examine is **latitude**, which represents the north-south geographic position of each property. We visualize its distribution using a histogram and horizontal boxplot to observe how the properties are spatially distributed along this dimension.
+
+```{r, out.width = "60%", fig.align='center'}
+# Latitude 
+
+lathist <- ggplot(pdat, aes(x = latitude)) +
+  geom_histogram(binwidth = 0.005, fill = "magenta3", color = "white") +
+  labs(title = "Distribution of Latitude",
+       y = "Count") +
+  theme_minimal() +
+  theme(plot.title = element_text(hjust = 0.5, size = 14, face = "bold"),
+        axis.title.x = element_blank())
+
+  
+latbox <- ggplot(pdat, aes(x = latitude)) +
+  geom_boxplot(fill = "magenta3", color = "black", 
+               outlier.color = "magenta3", outlier.size = 2) +
+  labs(title = " ", x = "Latitude", y = " ") +
+  theme_minimal() +
+  theme(axis.title.x = element_text(size = 11))
+
+
+grid.arrange(lathist, latbox, ncol = 1)
+```
+
+Most properties fall within a very narrow latitude range, indicating a relatively compact geographic area in terms of north-south spread. The histogram is skewed right, with the highest density of homes located around 24.97 degrees latitude. The boxplot indicates several outliers on both ends of the latitude range.
+
+
+
+Next, we examine the **longitude** variable, which represents the east-west geographic position of each property. We visualize its distribution using a combined histogram and horizontal boxplot.
+
+```{r, out.width = "58%", fig.align='center'}
+# Longitude 
+
+longhist <- ggplot(pdat, aes(x = longitude)) +
+  geom_histogram(binwidth = 0.005, fill = "gold1", color = "white") +
+  labs(title = "Distribution of Longitude",
+       y = "Count") +
+  theme_minimal() +
+  theme(plot.title = element_text(hjust = 0.5, size = 14, face = "bold"),
+        axis.title.x = element_blank()) 
+
+
+longbox <- ggplot(pdat, aes(x = longitude)) +
+  geom_boxplot(fill = "gold1", color = "black", 
+               outlier.color = "gold1", outlier.size = 2) +
+  labs(title = " ", x = "Longitude", y = " ") +
+  theme_minimal() +
+  theme(axis.title.x = element_text(size = 11))
+
+
+grid.arrange(longhist, longbox, ncol = 1)
+```
+
+Most properties are located within a narrow longitude band, indicating limited east-west spread and suggesting a fairly localized study area. The histogram shows a moderate right skew and the boxplot reveals multiple outliers, especially on the lower end, meaning a few properties are located farther west than the main cluster. There’s a noticeable spike in the number of properties at the center of the distribution, reinforcing that much of the housing data is concentrated in a specific area.
+
+
+
+Next, we visualize our response variable, which is **house price per unit area**, measured in units of _10,000 New Taiwan Dollars (NTD) per Ping_ where 1 Ping is equivalent to 3.3 square meters. Again, we use a combined histogram and boxplot.
+
+```{r, warning = FALSE, out.width = "58%", fig.align='center'}
+# House Prices of Unit Area (Response)
+
+pricehist <- ggplot(pdat, aes(x = house_price)) +
+  geom_histogram(binwidth = 5, fill = "plum2", color = "white") +
+  labs(title = "House Price per Unit Area",
+       y = "Count") +
+  scale_x_continuous(limits = c(0, 120), breaks = seq(0, 120, by = 20)) +
+  theme_minimal() +
+  theme(plot.title = element_text(hjust = 0.5, size = 14, face = "bold"),
+        axis.title.x = element_blank()) 
+
+
+pricebox <- ggplot(pdat, aes(x = house_price)) +
+  geom_boxplot(fill = "plum2", color = "black", 
+               outlier.color = "plum2", outlier.size = 2) +
+  labs(title = " ", y = " ",
+       x = "House Price (10000 New Taiwan Dollars/Ping)") +
+  scale_x_continuous(limits = c(0, 120), breaks = seq(0, 120, by = 20)) +
+  theme_minimal() +
+  theme(axis.title.x = element_text(size = 11))
+
+
+grid.arrange(pricehist, pricebox, ncol = 1)
+```
+
+The histogram shows a nearly bell shaped distribution centered around 40-45 (10,000 NTD/Ping), with a slight right skew, indicating some higher-priced properties pulling the tail to the right. The majority of homes are priced between 30-50 (10,000 NTD/Ping), suggesting this is the typical market rate in the sampled region. The boxplot highlights a few notable high outliers, suggesting luxury or premium real estate. While the distribution is fairly compact, the outliers may affect modeling.
+
+
+
+#### Pairsplot & Correlation Matrix
+
+To conclude our exploratory data analysis, we will generate a pairs plot and a correlation matrix to examine the relationships between all variables in the dataset. These visualizations will help identify potential multicollinearity, detect linear associations, and inform future feature selection for modeling.
+
+```{r,  out.width = "80%", fig.align='center'}
+# data wrangling
+pairsdat <- cbind(pdat[, 7], pdat[, 8], pdat[, 2:6])
+
+# pairs plot
+pplot <- pairs.panels(x = pairsdat)
+```
+
+Key takeaways from the Pairsplot & Correlation Matrix:
+
+1. Distance to Nearest MRT Station is negatively correlated with house price (r = -0.67). This suggests that closer proximity to MRT stations is strongly associated with higher house prices-a potentially key predictor.
+1. The number of nearby convenience stores is positively correlated with house price (r = 0.57), possibly reflecting neighborhood accessibility and desirability.
+1. Latitude and longitude show moderate positive correlations with house price (r = 0.55 and r = 0.52, respectively). This indicates a spatial pattern-certain geographic locations (likely more central or desirable) are associated with higher property values.
+1. _Multicollinearity Warning_: Latitude and longitude are moderately correlated with each other (r = 0.41-0.45).
+
+
+
+## Data Analysis
+
+#### Modeling
+
+Since our primary goal is prediction, as stated in our research question, we will split the data into training and testing sets. The training set will contain 70% of the data and will be used to build and tune the model, while the testing set will include the remaining 30% and will be used to evaluate the model’s performance on unseen data. This approach helps ensure a more accurate and generalizable assessment of predictive accuracy.
+
+```{r}
+# Splitting Data into Training and Testing Sets
+
+set.seed(123)
+
+train_indices <- sample(seq_len(nrow(pdat)), size = 0.7 * nrow(pdat))
+
+traindat <- pdat[train_indices, ]
+testdat  <- pdat[-train_indices, ]
+
+#dim(traindat)
+#dim(testdat)
+```
+
+The dataset was randomly split into training and testing subsets. The training set contains 289 observations (approximately 70%), which will be used to build the predictive model, while the testing set includes 125 observations (approximately 30%), which will be used to evaluate model performance on unseen data.
+
+
+##### Fitting a Simple Linear Regression
+
+Next, we fit a simple linear regression model on the training data, using house price per unit area as the response variable. All available predictor variables were included additively, allowing us to assess the individual contribution of each feature to the predicted housing price. The model summary is displayed below.
+
+
+```{r}
+fit <- lm(house_price ~ trans_date + house_age + dist_MRT + num_stores + latitude + longitude, data = traindat)
+          
+# summary(fit)  
+
+# Format model summary using broom
+model_summary <- broom::tidy(fit) %>%
+  mutate(estimate = round(estimate, 3),
+         std.error = round(std.error, 3),
+         statistic = round(statistic, 2),
+         p.value = round(p.value, 4))
+
+# Create a nice-looking table
+model_summary %>%
+  gt() %>%
+  tab_header(title = "Linear Regression Model Summary") %>%
+  fmt_number(columns = c(estimate, std.error, statistic, p.value), decimals = 3)
+```
+
+
+
+##### Initial Model Diagnostics
+
+To assess the validity of the model’s underlying assumptions, we generated the standard suite of diagnostic plots, including those for residual normality, homoscedasticity, linearity, and influential observations.
+
+```{r, out.width = "70%", fig.align='center'}
+par(mfrow = c(2,2))
+plot(fit)
+```
+
+**Linearity:**
+In the Residual vs. Fitted plot, the red line deviates from the zero line, indicating the presence of missed curvature and clear evidence against the linearity assumption.
+
+
+**Homoskedacity:**
+In the Residual vs. Fitted plot, there is an increasing fanning pattern present. This indicates a clear violation of the Equal Variance assumption. Further, since there is a clear violation in that plot, we are unable to further assess the Scale-Location plot for this assumption.
+
+
+**Normality:**
+In the Normal Q-Q Plot, there is a very heavy right tail - which is very problematic. This suggests that our residuals are skewed right, which means a clear violation of the Normality Assumption.
+
+
+**Outliers:**
+In the Residuals vs. Leverage Plot, there are no obvious points that are beyond the Cook's Distance Boundary of 0.5, indicating no obvious violations or evidence of outliers.
+
+
+
+Since the diagnostic plots reveal clear violations of the assumptions of linearity, homoscedasticity (equal variance), and normality of residuals, we will explore transformations of the variables in an effort to improve model fit and better satisfy these assumptions.
+
+
+
+#### Transforming Variables
+
+We explored three common transformations: (a) log, (b) reciprocal, and (c) square root, each applied solely to the response variable (house price per unit area). However, none of these transformations yielded meaningful improvements in the model diagnostics (see Appendix for details).
+
+Based on earlier exploratory analysis and visualizations, we observed that the distance to the nearest MRT station was heavily right-skewed, suggesting it may benefit from a log transformation to reduce the influence of extreme values. Therefore, we proceeded to fit a new model that applied a log transformation to both the response variable and the distance to the nearest MRT station.
+
+```{r}
+# trying log transformation of the response and dist_MRT
+
+fit5 <- lm(log(house_price) ~ trans_date + house_age + log(dist_MRT) + num_stores + latitude + longitude, data = traindat)
+          
+#summary(fit5)
+```
+
+
+#### Compare Dianostic Improvements 
+
+```{r, out.width = "70%", fig.align='center'}
+par(mfrow = c(2,2))
+plot(fit5)
+```
+
+The transformation resulted in a notable improvement in linearity, as the red line now more closely follows the zero line. 
+
+When assessing equal variance, a slight diamond-shaped pattern remains (characterized by increasing and then decreasing spread in the residuals), but this still represents a modest improvement compared to the untransformed model. 
+
+Regarding normality, the heavy tails in the residual distribution have diminished in severity and are now more symmetrically distributed, rather than being concentrated on one side.
+
+
+
+#### Compare R-Squared & Variance of Coefficients
+
+To supplement our diagnostic analysis, we compared the original model with the transformed model in terms of R², coefficient variance, and interpretation of the coefficients. This comparison provides additional insight into model performance and stability, and supports our evaluation of whether the transformation meaningfully improved the model.
+
+```{r}
+## Display nice table with this info
+
+# Extract R-squared
+r2_original <- summary(fit)$r.squared
+r2_transformed <- summary(fit5)$r.squared
+
+# Extract coefficient variances
+var_original <- diag(vcov(fit))
+var_transformed <- diag(vcov(fit5))
+
+# Combine results into a data frame
+model_comparison <- tibble(Model = c("Original Model", "Transformed Model"),
+                           `R-squared` = c(round(r2_original, 3), 
+                                           round(r2_transformed, 3)),
+                           `Avg. Coefficient Variance` = c(
+                             round(mean(var_original), 5),                                                           round(mean(var_transformed),5)),
+  `Interpretation of Coefficients` = c("Estimated coefficients represent additive change in raw price per unit area", "Estimated coefficients represent multiplicative effects on log(price), interpreted as percent changes" ))
+
+# Display in a clean table
+model_comparison %>%
+  gt() %>%
+  tab_header(title = "Comparison of Original and Transformed Linear Models") %>%
+  cols_label(Model = "Model Type",
+             `R-squared` = "R²",
+             `Avg. Coefficient Variance` = "Avg. Coef. Variance",
+             `Interpretation of Coefficients` = "Coefficient Interpretation")
+```
+
+**R-Squared:**
+The original model has an adjusted R-squared value of 0.635, and the transformed model has an adjusted R-squared of 0.758; this is a big improvement in variability explained by the predictors in the model.
+
+
+**Variance of Coefficients:**
+The variance for the estimated coefficients are all smaller for the transformed model with the exception of the distance to the nearest MRT station.
+
+
+**Interpreting Coefficients:**
+Since we took a log transformation of the response, the coefficients now represent the change in the _log of the house price_ per unit increase for each predictor.
+
+Since we took the log of the distance to nearest MRT station, that coefficient represents the increase in the log house price per unit increase in the log of the distance to nearest MRT station.
+
+
+Overall, we consider this transformation to be a modest but meaningful improvement over the original model, as it resulted in better diagnostic performance, a higher $R^2$, and more stable standard error estimates for the coefficients.
+
+$~$
+
+## Model Selection
+
+We then applied feature selection to the transformed model using the `dredge()` function, which generates models with all possible combinations of predictors and ranks them based on their Akaike Information Criterion (AIC). Although AIC values are not meaningful in isolation, they are useful for comparing models; with lower AIC values indicating a better trade-off between model fit and complexity. This approach helps identify the most parsimonious (simple) model that still explains the data well.
+
+```{r, include = FALSE}
+options(na.action = "na.fail")
+dredge(fit5)
+```
+
+
+#### Final Model
+
+The best-performing model, with an AIC of -149.2, uses log-transformed house price as the response variable and includes all predictors from the transformed model. Based on both diagnostic improvements and model selection criteria, this model is considered the most appropriate for capturing the relationships in the data. The final estimated model is written below:
+
+$$\log(\text{HousePrice}) = -674.3 + 0.0003771 \cdot \text{TransactionDate} - 0.005122 \cdot \text{HouseAge}$$ 
+$$- 0.1618 \cdot \log(\text{DistanceToMRT}) + 0.01067 \cdot \text{ConvenienceStores}$$ 
+$$+ 10.08 \cdot \text{Latitude}  + 3.468 \cdot \text{Longitude}$$
+
+
+#### Interpreting Model Coefficients
+
+
+**Intercept:**
+When the distance to the nearest MRT station is 1 and all other predictors are 0, the log house price per unit area is -674.3.
+
+
+**Transaction Date:**
+A one-day increase in transaction date is associated with a 0.0003771 increase in log house price per unit area.
+
+
+**House Age:**
+A one-year increase in house age is associated with a 0.005122 decrease in log house price per unit area.
+
+
+**Log distance to nearest MRT station:**
+A one-unit increase in the log of the distance to the nearest MRT station is associated with a 0.1618 decrease in log house price per unit area.
+
+
+
+**Number of nearby convenience stores:**
+For every additional nearby convenience store, there is an associated 0.01067 increase in log house price per unit area.
+
+
+
+**Latitude:**
+For each one unit increase in latitude, the log house price increases by 10.08 times the latitude increase.
+
+
+**Longitude:**
+For each one unit increase in longitude, the log house price increases by 3.468 times the latitude increase.
+
+
+
+
+$~$
+
+## Evaluating Predictive Ability
+
+While interpreting model coefficients provides insight into the direction and relative importance of each predictor, the primary goal of our study is not interpretation but prediction - to assess how well the model can forecast housing prices for new data. To evaluate the predictive ability of our final, transformed model, we shift focus to performance metrics that reflect how accurately the model generalizes to unseen observations. 
+
+Specifically, we will assess the model using three standard metrics: Root Mean Squared Error (RMSE), Mean Absolute Error (MAE), and R-squared ($R^2$). RMSE gives greater weight to larger errors and indicates the typical magnitude of prediction error. MAE provides the average absolute deviation between predicted and actual prices, offering a more intuitive interpretation of error magnitude. R², on the other hand, reflects the proportion of variance in housing prices explained by the model, giving us a general sense of its predictive strength. The values of these metrics for our final transformed model are displayed in the table below.
+
+```{r}
+# Make predictions on the test set using the final transformed model
+pred_log <- predict(fit5, newdata = testdat)
+
+# Convert predictions back to original scale
+pred_price <- exp(pred_log)
+
+# Actual values
+actual_price <- testdat$house_price
+
+# Compute evaluation metrics
+rmse_value <- rmse(actual_price, pred_price)
+mae_value <- mae(actual_price, pred_price)
+r_squared <- cor(actual_price, pred_price)^2
+
+# Create a tibble with evaluation metrics
+model_metrics <- tibble(
+  Metric = c("Root Mean Squared Error (RMSE)", 
+             "Mean Absolute Error (MAE)", 
+             "R-squared"),
+  Value = c(round(rmse_value, 2), 
+            round(mae_value, 2), 
+            round(r_squared, 3))
+)
+
+# Format as a clean table
+model_metrics %>%
+  gt() %>%
+  tab_header(
+    title = "Predictive Performance on Test Set"
+  ) %>%
+  fmt_number(columns = "Value", decimals = 3)
+
+```
+
+The results of our evaluation show that the final model achieves an **RMSE of 10.720**, meaning that, on average, the predicted house price per unit area deviates by about 10.72 units (in 10,000 NTD per Ping) from the actual value. 
+
+
+The **MAE of 6.100** indicates that the average absolute prediction error is relatively modest, providing further support for the model’s reliability.  
+
+
+The model’s **$R^2$ of 0.582** indicates that approximately 58.2% of the variance in housing prices is explained by the predictors in the model. While there is room for improvement, these results demonstrate that the model captures meaningful patterns in the data and provides a reasonable level of predictive accuracy. 
+
+
+$~$
+
+## Conclusion
+
+In this project, we set out to answer the question: Can a combination of property features accurately predict the unit price of real estate properties? Through careful data wrangling, exploratory analysis, model fitting, and diagnostic evaluation, we developed a log-transformed linear regression model that demonstrated reasonable predictive accuracy. By incorporating features such as distance to the nearest MRT station, house age, number of nearby convenience stores, and geographic location, the final model explained approximately 58% of the variance in housing prices and produced relatively low error metrics on unseen data. While there is room for improvement (particularly in capturing nonlinear effects or incorporating additional contextual variables) our findings suggest that property features can indeed serve as a meaningful basis for predicting unit price. This supports the use of interpretable statistical models in real estate valuation and lays the groundwork for more advanced modeling approaches in future work.
+
+
+\newpage
+
+## Appendix
+
+#### Missing Data Visualization
+
+```{r, out.width = "40%", fig.align='center'}
+# Visualize missing values as a heatmap-style plot
+vis_miss(pdat)
+```
+
+
+#### Other Varaible Transformations We Explored
+
+**Log Transformation of the Response:**
+```{r, out.width = "60%", fig.align='center'}
+# trying log transformation of the response
+
+fit2 <- lm(log(house_price) ~ trans_date + house_age + dist_MRT + num_stores + latitude + longitude, data = traindat)
+          
+#summary(fit2)
+
+par(mfrow = c(2,2))
+plot(fit2)
+```
+
+Linearity was slightly improved, still issues with Equal Variance and Heavy tails.
+
+
+**Reciprocal Transformation of the Response:**
+```{r, out.width = "60%", fig.align='center'}
+# trying reciprocal transformation of the response
+
+fit3 <- lm((1/house_price) ~ trans_date + house_age + dist_MRT + num_stores + latitude + longitude, data = traindat)
+          
+#summary(fit3)
+
+par(mfrow = c(2,2))
+plot(fit3)
+```
+
+Weird stuff going on with Equal Variance, no noticeably change in Normal Q-Q plot.
+
+
+**Square Root Transformation of the Response:**
+```{r, out.width = "60%", fig.align='center'}
+# trying square root transformation of the response
+
+fit4 <- lm(sqrt(house_price) ~ trans_date + house_age + dist_MRT + num_stores + latitude + longitude, data = traindat)
+          
+#summary(fit4)
+
+par(mfrow = c(2,2))
+plot(fit4)
+```
+
+Not much improvement with Linearity, Equal Variance, or in Normal Q-Q plot.
+
+
+
+
+\newpage
+
+## Contribution Statement
+
+**Tristan Cooper:**
+
+* Located Info for Project Dataset and Variable Descriptions
+* Fit Simple Linear Regression Model
+* Variable Transformations (in report and appendix)
+* Compared Training Models: Variance of Coefficients
+* Compared Training Models: Interpretations of Coefficients
+* Interpretations of all Selected Model's Coefficients
+
+
+
+**Harley Clifton:**
+
+* Organized Project Variable Descriptions in Table Format
+* Data Wrangling
+* Missing Data Visualization (and comments)
+* Univariate Graphs (and comments)
+* Pairs Plot & Correlation Matrix (and comments)
+* Split Data into Training and Testing Sets
+* Initial Model Diagnostics
+* Transformed Model Diagnostics
+* Compared Training Models: R-Squared Values
+* Model Selection with `dredge` function (and comments)
+* Estimated Model in LaTeX
+* Evaluated Predictive Ability
+* Conclusion
