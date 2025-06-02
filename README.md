@@ -1,0 +1,2 @@
+# PredictiveModeling_RealEstateValuationTaiwan
+Predicting Real Estate Valuation in Taiwan
